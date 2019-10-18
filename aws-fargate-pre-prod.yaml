@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates Lambda function framework for managing states of preprod Fargate services (tasks).
+Parameters:
+  StartupCron:
+    Type: String
+    Default: 0 10 ? * MON-FRI *
+  ShutdownCron:
+    Type: String
+    Default: 0 22 ? * MON-FRI * 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: ""     
+        Parameters:
+          - StartupCron
+          - ShutdownCron                        
+    ParameterLabels: 
+      StartupCron:
+        default: Time of day, in CRON format, in which Fargate services should start their tasks.  For example, the CRON string "0 10 ? MON-FRI *" indicates every weekday at 10:00 AM GMT i.e. 06:00 AM EDT.
+      ShutdownCron:
+        default: Time of day, in CRON format, in which Fargate services should shutdown their tasks.  For example, the CRON string "0 22 ? MON-FRI *" indicates every weekday at 10:00 PM GMT i.e. 06:00 PM EDT.     
+Resources: 
+  ManagePreprodFargatePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:       
+      ManagedPolicyName: manage-preprod-fargate-policy
+      Description: Allow Lambda function to call CloudWatch logging, ECS all, and SNS write service actions.
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: Allow
+            Action: 
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "arn:aws:logs:*:*:*"       
+          - Effect: Allow
+            Action: 
+              - ecs:updateService
+            Resource: "*"   
+          - Effect: Allow
+            Action:
+              - sns:Publish
+            Resource: "*"          
+  ManagePreprodFargateRole:
+    Type: AWS::IAM::Role
+    DependsOn: ManagePreprodFargatePolicy
+    Properties:
+      RoleName: manage-preprod-fargate-role
+     # Description: Allow Lambda function to call CloudWatch logging, ECS all, and SNS write service actions.
+      ManagedPolicyArns:
+        - Ref: ManagePreprodFargatePolicy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Path: "/"   
+  ManagePreprodFargateProfile:  
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: manage-preprod-fargate-role
+      Path: "/"
+      Roles:
+        - Ref: ManagePreprodFargateRole    
+  CloudwatchScheduleStartup:
+    Type: AWS::Events::Rule
+    DependsOn: ManagePreprodFargateFunction
+    Properties:
+      Description: Trigger to Lambda function to startup ECS tasks in the morning (EDT).
+      ScheduleExpression: !Sub 'cron(${StartupCron})'     
+      Name: manage-preprod-fargate-startup-event
+      State: 'ENABLED'
+      Targets:
+        - Arn: !GetAtt ManagePreprodFargateFunction.Arn
+          Id: manage-preprod-fargate  
+          Input: '{"action":"startup"}'
+  PermissionForStartupEventToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt ManagePreprodFargateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudwatchScheduleStartup.Arn            
+  CloudwatchScheduleShutdown:
+    Type: AWS::Events::Rule
+    DependsOn: ManagePreprodFargateFunction
+    Properties:
+      Description: Trigger to Lambda function to shutdown ECS tasks in the evening (EDT).
+      ScheduleExpression: !Sub 'cron(${ShutdownCron})'      
+      Name: manage-preprod-fargate-shutdown-event
+      State: 'ENABLED'
+      Targets:
+        - Arn: !GetAtt ManagePreprodFargateFunction.Arn
+          Id: manage-preprod-fargate 
+          Input: '{"action":"shutdown"}'           
+  PermissionForShutdownEventToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !GetAtt ManagePreprodFargateFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudwatchScheduleShutdown.Arn          
+  ManagePreprodFargateFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ManagePreprodFargateRole
+    Properties:
+      Description: Function for shutting down Fargate pre-production tasks during non-business hours.
+      Code:
+        ZipFile: >
+          exports.handler = function(event) {
+            // Paste the *real* function from Git
+          };
+      FunctionName: manage-preprod-fargate
+      Handler: 'index.handler'
+      Role: !GetAtt ManagePreprodFargateRole.Arn
+      Runtime: 'nodejs8.10'
+      Timeout: 10  
